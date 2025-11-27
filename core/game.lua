@@ -378,122 +378,93 @@ function game.do_attack(attacker, defender)
 end
 
 function game.ai_turn()
-
-    local ai_side = wesnoth.current.side     -- 여기서는 2
+    local ai_side = wesnoth.current.side      -- 보통 2
     local ai_units = wesnoth.get_units({ side = ai_side })
 
     local final_unit = nil
     local final_move = nil
-    local best_score = -99999
+    local best_score = -999999
 
+    ------------------------------------------------------------------
+    -- [1단계] 킹을 바로 잡을 수 있는 수가 있으면, 무조건 그걸 실행
+    ------------------------------------------------------------------
     for _, unit in ipairs(ai_units) do
         local moves = game.get_legal_moves(unit)
 
-        for _, hex in ipairs(moves) do
-            local score = game.ai_score_move(unit, hex)
+        for _, mv in ipairs(moves) do
+            local target = wesnoth.get_unit(mv.x, mv.y)
+            if target and target.side ~= ai_side and game.is_king(target) then
+                -- 안전 여부 상관없이 바로 실행 (이미 게임 끝나는 수니까)
+                game.selected_unit = unit
+                game.perform_move(mv.x, mv.y, mv)
 
-            if score > best_score then
-                best_score = score
-                final_unit = unit
-                final_move = hex
+                -- 이동 후 흑 폰 프로모션 자동 처리
+                local moved = wesnoth.get_unit(mv.x, mv.y)
+                if moved and moved.type:find("Pawn") and moved.side == ai_side and moved.y == 8 then
+                    wesnoth.extract_unit(moved)
+                    wesnoth.put_unit({
+                        x = mv.x, y = mv.y,
+                        side = ai_side,
+                        type = "Chess_Queen_Black"
+                    })
+                    wesnoth.message("PROMOTION", "흑색 폰이 퀸으로 자동 승급되었습니다.")
+                end
+
+                wesnoth.fire("end_turn")
+                return
             end
         end
     end
 
-    if final_unit and final_move then
-        game.selected_unit = final_unit
-        game.perform_move(final_move.x, final_move.y, final_move)
-    end
-    wesnoth.fire("end_turn")
-end
+    ------------------------------------------------------------------
+    -- [2단계] 그 외 수들 중에서, 자기 킹을 체크에 안 넣는 수만 평가
+    ------------------------------------------------------------------
+    for _, unit in ipairs(ai_units) do
+        local moves = game.get_legal_moves(unit)
 
+        for _, mv in ipairs(moves) do
+            -- 여기서는 킹 캡처 수는 이미 위에서 처리했으므로
+            -- 그냥 자기 킹이 위험해지는지만 체크
+            if not game.move_makes_self_check(unit, mv.x, mv.y) then
+                local score = game.ai_score_move(unit, mv)
 
-
-function game.ai_move_unit(u)
-    local moves = game.get_legal_moves(u)
-    if #moves == 0 then return end
-
-    local safe_moves = {}
-
-    -- 먼저 moves 중에서 자기 왕을 위험하게 만들지 않는 이동만 필터링
-    for _, mv in ipairs(moves) do
-        if not game.move_makes_self_check(u, mv.x, mv.y) then
-            table.insert(safe_moves, mv)
-        end
-    end
-
-    -- 만약 안전한 이동이 하나도 없다면,
-    -- 체크메이트 or 무빙 봉쇄 된 상태
-    if #safe_moves == 0 then
-        wesnoth.message("AI", "흑색이 이동할 수 있는 안전한 수가 없습니다.")
-        return
-    end
-
-    -- 1) 캡처 중에서 안전한 이동만 고려
-    local best_capture = nil
-    local best_value = -1
-
-    for _, mv in ipairs(safe_moves) do
-        local t = wesnoth.get_unit(mv.x, mv.y)
-        if t and t.side ~= u.side then
-            if game.is_king(t) then
-                best_capture = mv
-                best_value = 99999
-                break
-            end
-            local v = game.get_piece_value(t)
-            if v > best_value then
-                best_value = v
-                best_capture = mv
+                if score > best_score then
+                    best_score = score
+                    final_unit = unit
+                    final_move = mv
+                end
             end
         end
     end
 
-    if best_capture then
-        game.perform_move(best_capture.x, best_capture.y, best_capture)
-
-        local moved = wesnoth.get_unit(best_capture.x, best_capture.y)
-        if moved and moved.type:find("Pawn") and moved.side == 2 and moved.y == 8 then
-            wesnoth.extract_unit(moved)
-            wesnoth.put_unit({x=best_capture.x, y=best_capture.y, side=2, type="Chess_Queen_Black"})
-            wesnoth.message("PROMOTION", "흑색 폰이 퀸으로 자동 승급되었습니다.")
-        end
+    ------------------------------------------------------------------
+    -- [3단계] 아예 안전한 수가 없으면 그냥 턴만 넘김
+    ------------------------------------------------------------------
+    if not final_unit or not final_move then
+        wesnoth.message("AI", "흑색은 어떤 이동도 할 수 없습니다.")
+        wesnoth.fire("end_turn")
         return
     end
 
-    -- 2) 중앙 이동도 안전한 수 중에서만 선택
-    local zone_move = nil
-    for _, mv in ipairs(safe_moves) do
-        if mv.x >= 3 and mv.x <= 6 and mv.y >= 4 and mv.y <= 7 then
-            zone_move = mv
-            break
-        end
-    end
+    ------------------------------------------------------------------
+    -- [4단계] 선택된 수 실행 + 프로모션 처리
+    ------------------------------------------------------------------
+    game.selected_unit = final_unit
+    game.perform_move(final_move.x, final_move.y, final_move)
 
-    if zone_move then
-        game.perform_move(zone_move.x, zone_move.y, zone_move)
-
-        local moved = wesnoth.get_unit(zone_move.x, zone_move.y)
-        if moved and moved.type:find("Pawn") and moved.side == 2 and moved.y == 8 then
-            wesnoth.extract_unit(moved)
-            wesnoth.put_unit({x=zone_move.x, y=zone_move.y, side=2, type="Chess_Queen_Black"})
-            wesnoth.message("PROMOTION", "흑색 폰이 퀸으로 자동 승급되었습니다.")
-        end
-        return
-    end
-
-    -- 3) 그래도 안되면 안전한 이동 중 랜덤 선택
-    local r = safe_moves[math.random(#safe_moves)]
-    game.perform_move(r.x, r.y, r)
-
-    local moved = wesnoth.get_unit(r.x, r.y)
-    if moved and moved.type:find("Pawn") and moved.side == 2 and moved.y == 8 then
+    local moved = wesnoth.get_unit(final_move.x, final_move.y)
+    if moved and moved.type:find("Pawn") and moved.side == ai_side and moved.y == 8 then
         wesnoth.extract_unit(moved)
-        wesnoth.put_unit({x=r.x, y=r.y, side=2, type="Chess_Queen_Black"})
+        wesnoth.put_unit({
+            x = final_move.x, y = final_move.y,
+            side = ai_side,
+            type = "Chess_Queen_Black"
+        })
         wesnoth.message("PROMOTION", "흑색 폰이 퀸으로 자동 승급되었습니다.")
     end
-end
 
+    wesnoth.fire("end_turn")
+end
 
 
 function game.get_piece_value(u)
@@ -567,29 +538,31 @@ end
 function game.is_king(u)
     return u.type == "Chess_King_White" or u.type == "Chess_King_Black"
 end
-function game.ai_score_move(u, hex)
+function game.ai_score_move(u, mv)
+    local x, y = mv.x, mv.y
+    local target = wesnoth.get_unit(x, y)
 
-    -- 1) 캡처 가능하면 점수
-    local target = wesnoth.get_unit(hex.x, hex.y)
-    if target then
-        if game.is_king(target) then
-            return 10000   -- 왕 먹기 최우선
-        end
+    -- 1) 일반 캡처: 말 가치 기반
+    if target and target.side ~= u.side then
         return game.get_piece_value(target) * 20
     end
 
-    -- 2) 중앙 점수 (3~6, 4~7)
-    if hex.x >= 3 and hex.x <= 6 and hex.y >= 4 and hex.y <= 7 then
-        return 15
+    -- 2) 중앙 컨트롤(3~6, 4~7) 약간 보너스
+    local score = 0
+    if x >= 3 and x <= 6 and y >= 4 and y <= 7 then
+        score = score + 15
     end
 
-    -- 3) 안전성 체크
-    if game.ai_is_safe_move(u, hex) then
-        return 3
+    -- 3) 안전하면 조금 보너스, 위험하면 패널티
+    if game.ai_is_safe_move(u, mv) then
+        score = score + 3
     else
-        return -50
+        score = score - 50
     end
+
+    return score
 end
+
 
 function game.end_game(dead_side)
     -- 1. 경로 및 이미지 설정
@@ -676,30 +649,50 @@ function game.check_king_warning()
 end
 
 function game.move_makes_self_check(unit, to_x, to_y)
-    local u = unit
-    local original_x, original_y = u.x, u.y
+    local original_x, original_y = unit.x, unit.y
+    local side = unit.side
 
+    -- 이동 전에 체커 (현재 킹이 체크 상태면 체커를 허용해야 함)
+    -- 이동해서 체크에서 벗어나는 경우도 있어야 함
+    local king_was_in_check = game.is_king_in_check(side)
+
+    -- 이동 시뮬레이션
     local target = wesnoth.get_unit(to_x, to_y)
     local captured_unit = nil
-    if target and target.side ~= u.side then
+    
+    if target then
         captured_unit = target
         wesnoth.extract_unit(target)
     end
 
-    wesnoth.extract_unit(u)
-    wesnoth.put_unit({id=u.id, type=u.type, side=u.side, x=to_x, y=to_y})
+    -- 원래 유닛 제거
+    wesnoth.extract_unit(unit)
+    
+    -- 유닛 새 위치에 복사 (clone 형태)
+    wesnoth.put_unit({
+        id = unit.id,
+        type = unit.type,
+        side = side,
+        x = to_x, 
+        y = to_y,
+        moves = 0
+    })
+    
+    -- 여기서 체크 확인
+    local still_in_check = game.is_king_in_check(side)
 
-    local king_in_check = game.is_king_in_check(u.side)
-
+    -- cleanup
     wesnoth.extract_unit(wesnoth.get_unit(to_x, to_y))
-    wesnoth.put_unit({id=u.id, type=u.type, side=u.side, x=original_x, y=original_y})
+    wesnoth.put_unit(unit)
 
     if captured_unit then
         wesnoth.put_unit(captured_unit)
     end
 
-    return king_in_check
+    -- 만약 이동 후 체크가 된다면 → 위험 이동
+    return still_in_check
 end
+
 
 function game.copy_variables(src, dst)
     if not src or not dst then return end
